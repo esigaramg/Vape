@@ -111,7 +111,7 @@
             welcomeText: 'Trouvez instantanément votre matériel, e-liquide ou saveur préférée.'
         };
 
-        const EMPTY_PRODUCT = { name: '', flavor: '', brand_id: '', category_id: '', short_description: '', box_content: '', product_type: '', specs: [], main_image_url: DEFAULT_IMG };
+        const EMPTY_PRODUCT = { name: '', flavor: '', brand_id: '', category_id: '', short_description: '', box_content: '', product_type: '', is_promo: false, specs: [], main_image_url: DEFAULT_IMG };
         const EMPTY_VARIANT = () => ({ id: 'var_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), price: '', is_out_of_stock: false, nicotine_level: '-', volume_ml: '-', ohm_value: '-', color_finish: '-', flavor: '-', image_url: '' });
 
         // ====================================================================
@@ -555,6 +555,7 @@
                         <div className="relative h-44 sm:h-56 overflow-hidden bg-white flex items-center justify-center p-3 cursor-pointer" onClick={() => onOpen(product.id)}>
                             <img src={displayImage} alt={product.name} loading="lazy" className="max-w-full max-h-full object-contain group-hover:scale-105 transition duration-500" />
                             {brand && <span className="absolute top-2 left-2 bg-slate-950/90 backdrop-blur-md text-teal-400 text-[9px] sm:text-[10px] uppercase font-extrabold px-2 py-0.5 rounded-full border border-slate-800">{brand.name}</span>}
+                            {product.is_promo && <span className="absolute bottom-2 left-2 bg-rose-500 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full shadow">🔥 PROMO</span>}
                             {currentVariant.id && !isInStock(currentVariant) && <span className="absolute top-2 right-2 bg-rose-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">En rupture</span>}
                         </div>
 
@@ -635,6 +636,7 @@
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div className="w-full h-48 sm:h-56 bg-white rounded-2xl border border-slate-800 flex items-center justify-center p-3 relative">
                                 <img src={displayImage} alt={product.name} className="max-w-full max-h-full object-contain" />
+                                {product.is_promo && <span className="absolute bottom-2 left-2 bg-rose-500 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full shadow">🔥 PROMO</span>}
                                 {currentVariant.id && !isInStock(currentVariant) && <span className="absolute top-2 right-2 bg-rose-500 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">En rupture</span>}
                             </div>
                             <div className="space-y-3">
@@ -1417,13 +1419,19 @@
                     short_description: newProduct.short_description || '',
                     box_content: newProduct.box_content || '',
                     product_type: newProduct.product_type || null,
+                    is_promo: !!newProduct.is_promo,
                     specs: (newProduct.specs || [])
                         .map(sp => ({ label: String(sp.label || '').trim(), value: String(sp.value || '').trim() }))
                         .filter(sp => sp.label && sp.value),
                     main_image_url: newProduct.main_image_url
                 };
 
-                const { error: pError } = await supabaseClient.from('products').upsert([productPayload]);
+                let { error: pError } = await supabaseClient.from('products').upsert([productPayload]);
+                if (pError && /is_promo/.test(pError.message)) {
+                    alert("La colonne 'is_promo' n'existe pas encore dans Supabase : le produit est enregistré SANS le statut Promotion.\n\nExécutez dans le SQL Editor :\nalter table public.products add column if not exists is_promo boolean not null default false;\nnotify pgrst, 'reload schema';");
+                    const { is_promo, ...rest } = productPayload;
+                    ({ error: pError } = await supabaseClient.from('products').upsert([rest]));
+                }
                 if (pError) return alert('Erreur produit : ' + pError.message + (/specs|product_type/.test(pError.message) ? "\n\nIl manque les colonnes 'product_type' et 'specs' dans Supabase (voir le SQL fourni)." : ''));
 
                 const stamp = Date.now().toString(36);
@@ -1458,6 +1466,13 @@
                 loadDataFromSupabase();
             };
 
+            const togglePromo = async (p) => {
+                const { error } = await supabaseClient.from('products').update({ is_promo: !p.is_promo }).eq('id', p.id);
+                if (error) return alert('Erreur : ' + error.message + (/is_promo/.test(error.message) ? "\n\nExécutez dans le SQL Editor :\nalter table public.products add column if not exists is_promo boolean not null default false;\nnotify pgrst, 'reload schema';" : ''));
+                try { localStorage.removeItem('esigara_catalog_v1'); } catch (e) {}
+                setProducts(prev => prev.map(x => x.id === p.id ? { ...x, is_promo: !p.is_promo } : x));
+            };
+
             const startEditProduct = (prod) => {
                 setEditingProductId(prod.id);
                 setNewProduct({
@@ -1468,6 +1483,7 @@
                     short_description: prod.short_description || '',
                     box_content: prod.box_content || '',
                     product_type: prod.product_type || '',
+                    is_promo: !!prod.is_promo,
                     specs: Array.isArray(prod.specs) ? prod.specs.map(sp => ({ label: sp.label || '', value: sp.value || '' })) : [],
                     main_image_url: prod.main_image_url
                 });
@@ -1890,11 +1906,12 @@
                             <img src={p.main_image_url} alt={p.name} loading="lazy" className="max-w-full max-h-full object-contain" />
                         </div>
                         <div>
-                            <h4 className="font-bold text-xs text-slate-200">{p.name}</h4>
+                            <h4 className="font-bold text-xs text-slate-200">{p.is_promo && <span className="text-rose-400 mr-1">🔥</span>}{p.name}</h4>
                             <p className="text-[10px] text-slate-400">{p.variants.length} option(s) tarifaire(s)</p>
                         </div>
                     </div>
                     <div className="flex items-center space-x-2">
+                        <button onClick={() => togglePromo(p)} title={p.is_promo ? 'Retirer de la promotion' : 'Mettre en promotion'} className={`px-2.5 py-1 border rounded-lg text-xs font-bold ${p.is_promo ? 'bg-rose-500 text-white border-rose-500' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>% Promo</button>
                         <button onClick={() => startEditProduct(p)} className="px-2.5 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold">Modifier</button>
                         <button onClick={() => deleteProduct(p.id)} className="px-2.5 py-1 bg-rose-500/10 text-rose-400 border border-rose-500/30 rounded-lg text-xs font-bold">Supprimer</button>
                     </div>
@@ -2032,6 +2049,22 @@
                                                 <p className="text-xs text-slate-500">Aucune rubrique créée pour le moment.</p>
                                             ) : (
                                                 <div className={`grid ${gs.grid}`}>
+                                                    {(() => {
+                                                        const promoCount = products.filter(p => p.is_promo && isVisible(p)).length;
+                                                        if (promoCount === 0) return null;
+                                                        return (
+                                                            <div key="__promo" className="bg-slate-900/90 border-2 border-rose-500/60 rounded-3xl overflow-hidden shadow-xl flex flex-col hover:border-rose-400 transition duration-300 group cursor-pointer" onClick={() => navigateTo('promo')}>
+                                                                <div className={`relative ${gs.img} shrink-0 overflow-hidden bg-gradient-to-br from-rose-500 to-rose-700 flex items-center justify-center`}>
+                                                                    <span className="text-5xl sm:text-6xl font-black text-white/95 group-hover:scale-110 transition duration-500">%</span>
+                                                                    <h3 className={`absolute bottom-2 left-3 right-3 font-black ${gs.title} text-white leading-tight truncate`}>🔥 Promotions</h3>
+                                                                </div>
+                                                                <div className={`${gs.body} p-2 sm:p-3 flex flex-col gap-2`}>
+                                                                    <div className="flex-1 flex items-center justify-center text-center text-[11px] text-slate-400 px-2">{promoCount} produit(s) en promotion, tous classés par rubrique d'origine.</div>
+                                                                    <button className="shrink-0 w-full py-2 bg-rose-500 hover:bg-rose-400 text-white rounded-xl text-[11px] font-black transition">Voir les promotions &rarr;</button>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })()}
                                                     {categories.filter(c => !c.parent_id).map(cat => {
                                                         const subcategories = categories.filter(sub => sub.parent_id === cat.id);
                                                         return (
@@ -2173,6 +2206,29 @@
                                             const list = applyFilters(rawList, filters);
                                             return rawList.length === 0 ? (
                                                 <p className="text-center text-sm text-slate-500 py-12">Aucun produit dans ce dossier pour le moment.</p>
+                                            ) : (
+                                                <div className="space-y-5">
+                                                    <FilterBar list={rawList} brands={brands} filters={filters} onChange={setFilters} />
+                                                    {list.length === 0
+                                                        ? <p className="text-center text-sm text-slate-500 py-8">Aucun produit ne correspond à ces filtres.</p>
+                                                        : <div className={gridClass}>{list.map(renderCard)}</div>}
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+
+                                {currentView === 'promo' && (
+                                    <div className="space-y-8">
+                                        <div className="border-b border-slate-800 pb-4">
+                                            <h2 className="text-2xl font-black text-slate-100">🔥 Promotions</h2>
+                                            <p className="text-xs text-slate-400 mt-1">Les produits en promotion, toutes rubriques confondues.</p>
+                                        </div>
+                                        {(() => {
+                                            const rawList = products.filter(p => p.is_promo && isVisible(p));
+                                            const list = applyFilters(rawList, filters);
+                                            return rawList.length === 0 ? (
+                                                <p className="text-center text-sm text-slate-500 py-12">Aucune promotion en ce moment.</p>
                                             ) : (
                                                 <div className="space-y-5">
                                                     <FilterBar list={rawList} brands={brands} filters={filters} onChange={setFilters} />
@@ -2493,6 +2549,10 @@
                                                         )}
                                                     </div>
                                                 </div>
+                                                <label className="flex items-center gap-3 bg-slate-950 border border-rose-500/30 rounded-xl px-3 py-2.5 cursor-pointer">
+                                                    <input type="checkbox" checked={!!newProduct.is_promo} onChange={e => setNewProduct({ ...newProduct, is_promo: e.target.checked })} className="w-4 h-4 accent-rose-500" />
+                                                    <span className="text-xs font-bold text-slate-200">🔥 En promotion : afficher aussi dans la rubrique « Promotions » (le produit reste dans sa rubrique normale)</span>
+                                                </label>
                                                 <div>
                                                     <label className="text-xs text-slate-400 font-bold uppercase">Description rapide</label>
                                                     <input type="text" value={newProduct.short_description} onChange={e => setNewProduct({ ...newProduct, short_description: e.target.value })} placeholder="Résumé..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" />
